@@ -5,13 +5,12 @@ import argparse
 from pathlib import Path
 from zipfile import ZipFile
 import xml.etree.ElementTree as ET
-from collections import defaultdict
 
-# 该变量由 XML 标签自动构造
 CLASS_NAME_TO_ID = {}
 
 
 def extract_classes_from_xmls(label_files):
+    """从XML标注文件中提取类别名称"""
     class_names = set()
     for xml_path in label_files:
         try:
@@ -24,6 +23,80 @@ def extract_classes_from_xmls(label_files):
         except Exception as e:
             print(f"[ERROR] Failed to parse {xml_path}: {e}")
     return sorted(class_names)
+
+
+def extract_classes_from_txts(label_files, classes_file=None):
+    """从YOLO格式的TXT标注文件中提取类别ID，并尝试从classes.txt获取类别名称"""
+    class_ids = set()
+
+    # 从TXT标注文件中提取所有使用的类别ID
+    for txt_path in label_files:
+        try:
+            with open(txt_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        parts = line.split()
+                        if (
+                            len(parts) >= 5
+                        ):  # YOLO格式：class_id x_center y_center width height
+                            class_id = int(parts[0])
+                            class_ids.add(class_id)
+        except Exception as e:
+            print(f"[ERROR] Failed to parse {txt_path}: {e}")
+
+    # 尝试从classes.txt文件读取类别名称
+    class_names_from_file = []
+    if classes_file and classes_file.exists():
+        try:
+            with open(classes_file, "r", encoding="utf-8") as f:
+                class_names_from_file = [line.strip() for line in f if line.strip()]
+            print(
+                f"[INFO] Loaded {len(class_names_from_file)} class names from {classes_file}"
+            )
+        except Exception as e:
+            print(f"[ERROR] Failed to read classes file {classes_file}: {e}")
+
+    # 构建最终的类别名称列表
+    if class_names_from_file and class_ids:
+        # 根据实际使用的类别ID获取对应的类别名称
+        result_names = []
+        for class_id in sorted(class_ids):
+            if class_id < len(class_names_from_file):
+                result_names.append(class_names_from_file[class_id])
+            else:
+                print(
+                    f"[WARN] Class ID {class_id} exceeds available class names, using default name"
+                )
+                result_names.append(f"class_{class_id}")
+        return result_names
+    elif class_ids:
+        # 没有classes.txt文件，使用类别ID作为名称
+        return [f"class_{class_id}" for class_id in sorted(class_ids)]
+    else:
+        # 没有找到任何类别ID
+        print("[WARN] No class IDs found in annotation files")
+        return []
+
+
+def detect_annotation_format(labels_dir):
+    """检测标注文件格式：XML (VOC) 或 TXT (YOLO)"""
+    label_files = list(labels_dir.iterdir())
+    xml_count = len([f for f in label_files if f.suffix.lower() == ".xml"])
+    txt_count = len(
+        [
+            f
+            for f in label_files
+            if f.suffix.lower() == ".txt" and f.name != "classes.txt"
+        ]
+    )
+
+    if xml_count > txt_count:
+        return "xml"
+    elif txt_count > 0:
+        return "txt"
+    else:
+        return "unknown"
 
 
 def convert_voc_to_yolo(xml_path: Path, txt_path: Path, class_name_to_id: dict):
@@ -111,14 +184,36 @@ def split_dataset(
     label_files = [f for f in labels_dir.iterdir() if f.suffix.lower() in label_exts]
     label_stem_to_path = {f.stem: f for f in label_files}
 
-    # 自动提取类别
-    xml_files = [f for f in label_files if f.suffix.lower() == ".xml"]
-    class_names = extract_classes_from_xmls(xml_files)
-    class_name_to_id = {name: idx for idx, name in enumerate(class_names)}
+    # 自动检测标注格式
+    annotation_format = detect_annotation_format(labels_dir)
+    print(f"[INFO] Detected annotation format: {annotation_format}")
+
+    # 根据检测到的格式提取类别信息
+    class_names = []
+    class_name_to_id = {}
+
+    if annotation_format == "xml":
+        xml_files = [f for f in label_files if f.suffix.lower() == ".xml"]
+        class_names = extract_classes_from_xmls(xml_files)
+        class_name_to_id = {name: idx for idx, name in enumerate(class_names)}
+        print(f"[INFO] Extracted classes from XML files: {class_name_to_id}")
+    elif annotation_format == "txt":
+        txt_files = [
+            f
+            for f in label_files
+            if f.suffix.lower() == ".txt" and f.name != "classes.txt"
+        ]
+        classes_file = labels_dir / "classes.txt"
+        class_names = extract_classes_from_txts(txt_files, classes_file)
+        class_name_to_id = {name: idx for idx, name in enumerate(class_names)}
+        print(f"[INFO] Extracted classes from TXT files: {class_name_to_id}")
+    else:
+        print(f"[WARN] Unknown annotation format or no annotation files found")
 
     # 保存 classes.txt
-    (output_dir / "classes.txt").write_text("\n".join(class_names))
-    print(f"[INFO] Found classes: {class_name_to_id}")
+    if class_names:
+        (output_dir / "classes.txt").write_text("\n".join(class_names))
+        print(f"[INFO] Saved classes.txt with {len(class_names)} classes")
 
     # 匹配图像和标签
     matched_pairs = []
@@ -140,29 +235,26 @@ def split_dataset(
         "test": matched_pairs[val_end:],
     }
 
-    # 仅当 convert_xml = True 时提取类别名
-    xml_files = [f for f in label_files if f.suffix.lower() == ".xml"]
-    if convert_xml:
-        class_names = extract_classes_from_xmls(xml_files)
-        class_name_to_id = {name: idx for idx, name in enumerate(class_names)}
-        (output_dir / "classes.txt").write_text("\n".join(class_names))
-        print(f"[INFO] Found classes: {class_name_to_id}")
-    else:
-        class_name_to_id = {}
-
+    # 复制文件并处理标注格式转换
     for split, pairs in splits.items():
         for img_path, label_path in pairs:
             shutil.copy(img_path, output_images_dir / split / img_path.name)
-            if label_path.suffix.lower() == ".xml":
+
+            if label_path.suffix.lower() == ".xml" and convert_xml:
+                # XML转YOLO格式
                 yolo_txt_path = output_labels_dir / split / f"{label_path.stem}.txt"
                 convert_voc_to_yolo(label_path, yolo_txt_path, class_name_to_id)
             else:
+                # 直接复制TXT文件或不转换的XML文件
                 shutil.copy(label_path, output_labels_dir / split / label_path.name)
 
-    if generate_yaml and convert_xml:
+    # 生成data.yaml文件
+    if generate_yaml and class_names:
         generate_data_yaml(output_dir, {v: k for k, v in class_name_to_id.items()})
 
-    print("[INFO] Dataset splitting and label conversion completed.")
+    print(f"[INFO] Dataset splitting completed. Total files: {total}")
+    for split, pairs in splits.items():
+        print(f"[INFO] {split}: {len(pairs)} files")
 
 
 def zip_output_dir(output_dir: Path, dist_dir: Path):
@@ -199,7 +291,6 @@ def main():
         default="dist",
         help="Directory to store ZIP file (default: dist).",
     )
-
     parser.add_argument(
         "--train_ratio",
         type=float,
@@ -219,13 +310,13 @@ def main():
         "--convert_xml",
         type=lambda x: x.lower() in ["true", "1", "yes"],
         default=True,
-        help="Whether to convert XML annotations to YOLO TXT format (default: True)",
+        help="Whether to convert XML annotations to YOLO TXT format. For TXT annotations, this parameter is ignored (default: True)",
     )
     parser.add_argument(
         "--generate_yaml",
         type=lambda x: x.lower() in ["true", "1", "yes"],
         default=False,
-        help="Whether to generate YOLO-style data.yaml config file (default: False)",
+        help="Whether to generate YOLO-style data.yaml config file. Works with both XML and TXT annotations (default: False)",
     )
 
     args = parser.parse_args()

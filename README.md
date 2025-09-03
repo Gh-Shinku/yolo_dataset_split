@@ -10,9 +10,9 @@ Your dataset directory (`--base_dir`) must follow this format:
 datasets/
 ├── images/
 │   ├── 1.jpg
-│   └── 2.png
+│   └── 2.jpg
 └── annotations/
-    ├── 1.xml
+    ├── 1.txt
     └── 2.txt
 ```
 
@@ -44,14 +44,14 @@ output/
 
 ## Installation
 
-This script requires only the Python standard library (≥3.6). No external dependencies are needed.
+This project use [uv](https://github.com/astral-sh/uv) as package manager, run `uv sync` under the root directory to install dependencies.
 
 ---
 
 ## Usage
 
 ```bash
-python split_dataset.py [options]
+uv run main.py [options]
 ```
 
 ### Options
@@ -71,12 +71,12 @@ python split_dataset.py [options]
 
 ```bash
 # Split dataset, convert XML, generate YAML and compress output
-python split_dataset.py --base_dir datasets --output_dir output --dist_dir dist --generate_yaml true
+uv run main.py --base_dir datasets --output_dir output --dist_dir dist --generate_yaml true
 ```
 
 ```bash
 # Only split, no XML conversion or YAML generation (assumes .txt annotations already exist)
-python split_dataset.py --convert_xml false --generate_yaml false
+uv run main.py --convert_xml false --generate_yaml false
 ```
 
 ---
@@ -101,14 +101,8 @@ names:
 
 ## Notes
 
-* Class names are extracted from `.xml` annotations and saved to `classes.txt`.
+* Class names are extracted from annotations and saved to `classes.txt`.
 * If `--convert_xml false`, any `.xml` files will be ignored (not converted).
 * Unmatched images or labels will be skipped with warnings.
 
 ---
-
-## Future Work (optional ideas)
-
-* [ ] Support nested folders for images/annotations
-* [ ] Add label consistency checker
-* [ ] Support image/label format conversion (e.g., `.png` to `.jpg`)
